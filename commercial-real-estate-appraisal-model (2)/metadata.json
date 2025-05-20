@@ -1,0 +1,6 @@
+{
+  "name": "Commercial Real Estate Appraisal Model",
+  "description": "An interactive web application to model commercial real estate appraisals using income and sales comparison approaches. Users can adjust various property and market variables via sliders to see real-time valuation results.",
+  "requestFramePermissions": [],
+  "prompt": ""
+}
