@@ -24,6 +24,28 @@ export type ConditionOfSale = 'ArmsLength' | 'REO' | 'ShortSale' | 'EstateSale' 
 export type LocationQuality = 'Prime' | 'Secondary' | 'Tertiary' | 'Average' | 'Inferior' | 'Superior' | '';
 export type SiteUtility = 'Good' | 'Average' | 'Poor' | 'Excellent' | 'Fair' | '';
 
+// New interface for Lease Options
+export interface LeaseOption {
+  optionNumber: number;
+  termLengthYears: number;
+  rentTerms: string; // e.g., "FMV", "Fixed Increase of X%", "CPI Adjusted"
+  noticePeriodMonths?: number;
+}
+
+// New interface for Step-Up Escalation Entries
+export interface StepUpEscalationEntry {
+  yearInLeaseTerm: number; // e.g., 1, 2, 3...
+  rentPerSF: number; // The new rent per square foot for that year
+}
+
+// New interface for Reimbursement Structure Details
+export interface ReimbursementStructureDetails {
+  expenseStopAmountPerSF?: number;
+  baseYearForCAM?: number;
+  capsOnControllableOpExPercent?: number;
+  adminFeeOnOpExPercent?: number;
+}
+
 export interface RentRollEntry {
   id: string; // UUID
   suite: string;
@@ -36,10 +58,14 @@ export interface RentRollEntry {
   useType: UseType; 
   escalationType: EscalationType; 
   escalationPercent: number; // Annual % (used if escalationType is fixedPercent)
+  cpiEscalationRatePercent?: number; // Annual % for CPI, if not using a global rate
+  cpiReviewFrequencyYears?: number; // How often CPI escalation is applied (e.g., 1 for annually)
   // Placeholder for future complex escalation structures, e.g., for 'stepUp' or 'cpi'. Currently unused by logic.
-  escalationDetail: string; 
+  escalationDetail: string;
+  stepUpSchedule?: StepUpEscalationEntry[];
   
   reimbursementType: ReimbursementType;
+  reimbursementDetails?: ReimbursementStructureDetails; // This line should now correctly reference the above interface
   
   // Renewal Assumptions for this specific lease
   renewalProbabilityPercent: number; // 0-100
@@ -49,6 +75,8 @@ export interface RentRollEntry {
   renewalMarketRentPerSF: number; // Expected market rent $/SF for renewal term (can be same as current market)
   renewalTiPerSF: number; // TI $/SF for renewal
   renewalLcPercentOfFirstYearRent: number; // LC % of first year's renewed rent
+  freeRentMonthsAtRenewal?: number;
+  renewalOptions?: LeaseOption[];
 }
 
 export interface CapitalExpenditureEntry {
@@ -99,15 +127,28 @@ export interface DCFResults {
   yearNPlusOneNOI: number; // NOI used for terminal value calc
 }
 
+// New interface for Expense Items
+export interface ExpenseItem {
+  amount: number;
+  inflationRate?: number; // percentage
+  category?: 'Fixed' | 'Variable' | 'Undistributed' | '';
+  isRecoverable?: boolean; // defaults to true for items like taxes, insurance, CAM
+}
 
 export interface OpexBuckets {
-  taxes: number;
-  insurance: number;
-  repairsMaintenance: number;
-  managementPercentOfEGI: number; 
-  reserves: number;
-  // Add other common OpEx categories as needed e.g. utilities if not directly reimbursed
-  // utilities: number; 
+  taxes: ExpenseItem;
+  insurance: ExpenseItem;
+  repairsMaintenance: ExpenseItem;
+  managementPercentOfEGI: ExpenseItem; // amount is percentage, inflationRate for fee % growth
+  reserves: ExpenseItem;
+  // utilities: ExpenseItem; // Consider adding later if needed
+}
+
+// New interface for Other Income Items
+export interface OtherIncomeItem {
+  description: string;
+  amount: number;
+  growthRate?: number; // percentage
 }
 
 export interface SalesCompAdjustments {
@@ -137,6 +178,55 @@ export interface ComparableSale {
 
 export type SalesCompValueSelectionType = 'average' | 'median' | 'custom';
 
+// New interface for Subject Sale History
+export interface SubjectSaleHistoryEntry {
+  date: string; // YYYY-MM-DD
+  price: number;
+  parties: string;
+  natureOfTransaction: string;
+}
+
+// New interface for Market Demographics
+export interface MarketDemographics {
+  regionalPopulation: number;
+  regionalPopulationGrowthRate: number; // percentage
+  localUnemploymentRate: number; // percentage
+  majorEmployersNarrative: string;
+}
+
+// New interface for Submarket Analysis
+export interface SubmarketAnalysis {
+  submarketVacancyRate: number; // percentage
+  submarketRentalRateOffice?: number; // per SF or relevant unit
+  submarketRentalRateRetail?: number; // per SF or relevant unit
+  submarketRentalRateIndustrial?: number; // per SF or relevant unit
+  newConstructionPipelineSF: number;
+  marketTrendsNarrative: string;
+}
+
+// New interface for Easements
+export interface Easement {
+  description: string;
+  type: string;
+  impact: string;
+}
+
+// New interface for Condominium Details
+export interface CondominiumDetails {
+  projectName: string;
+  unitNumber: string;
+  percentCommonInterest: number;
+}
+
+// New interface for Assessment Details
+export interface AssessmentDetails {
+  assessmentYear: number;
+  assessedValueLand: number;
+  assessedValueImprovements: number;
+  propertyTaxRate: string; // e.g., "per $1000" or a numeric rate
+  totalAnnualTaxes?: number; // optional, as it can be calculated
+}
+
 export interface AppraisalInputs {
   // Assignment Details
   effectiveDate: string;
@@ -148,6 +238,14 @@ export interface AppraisalInputs {
   extraordinaryAssumptionDetail: string;
   isHypotheticalCondition: boolean;
   hypotheticalConditionDetail: string;
+  exposureTimeMonths: number;
+  marketingTimeMonths: number;
+  inspectionDate: string; // YYYY-MM-DD
+  inspectedBy: string;
+  subjectSaleHistory: SubjectSaleHistoryEntry[];
+  formOfOwnership: string;
+  condominiumDetails?: CondominiumDetails;
+  assessmentDetails: AssessmentDetails;
 
   // Site Characteristics
   topography: TopographyOptions;
@@ -161,9 +259,34 @@ export interface AppraisalInputs {
     gas: boolean;
     electric: boolean;
     telecom: boolean;
+    fireSprinkler?: boolean; // Added optional fireSprinkler to utilities
   };
+  parkingSpacesTotal: number;
+  parkingRatioPer1000SF?: number;
+  parkingAdequacy: 'Adequate' | 'Surplus' | 'Deficient' | '';
+  easements: Easement[];
+  encroachmentsNarrative: string;
 
   // Improvement Details
+  // Construction Details
+  foundationType: string;
+  frameType: string;
+  exteriorWallMaterial: string;
+  roofCoverType: string;
+  roofAge: number;
+  // Interior Finish Details
+  interiorWallFinish: string;
+  ceilingType: string;
+  lightingType: string;
+  floorCoveringTypes: string;
+  // Mechanical System Details
+  hvacSystemType: string;
+  hvacAgeCondition: string;
+  electricalService: string;
+  plumbingSystem: string;
+  fireSprinklerSystemDetailed: string;
+  functionalUtilityNarrative: string;
+
   gba: number; 
   rentableSF: number; 
   usableSF: number;
@@ -183,7 +306,8 @@ export interface AppraisalInputs {
   grossPotentialIncome: number; 
   vacancyLossPercent: number; 
   creditCollectionLossPercent: number; 
-  operatingExpensesBuckets: OpexBuckets; 
+  operatingExpensesBuckets: OpexBuckets;
+  otherIncome?: OtherIncomeItem[];
   capRateIncome: number; 
   marketRentPerSF: number; 
   inPlaceRentPerSF: number; 
@@ -264,6 +388,10 @@ export interface AppraisalInputs {
   // exitCapRate is now part of DCF assumptions
   targetUnleveredIRR: number; 
   dcrThreshold: number; 
+
+  // Market Analysis Inputs
+  marketDemographics: MarketDemographics;
+  submarketAnalysis: SubmarketAnalysis;
 }
 
 export interface IncomeApproachResults {

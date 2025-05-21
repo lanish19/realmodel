@@ -106,14 +106,39 @@ function projectSingleLeaseCashFlows(
 
             const baseAnnualRent = lease.squareFeet * lease.currentRentPerSF;
             let currentYearLeaseRent = baseAnnualRent;
+            const currentLeaseYearNumber = yearsIntoLeaseForEscalation + 1; // 1-indexed year in lease term
 
             if (lease.escalationType === 'fixedPercent' && lease.escalationPercent > 0) {
                 currentYearLeaseRent *= Math.pow(1 + lease.escalationPercent / 100, yearsIntoLeaseForEscalation);
+            } else if (lease.escalationType === 'stepUp' && lease.stepUpSchedule && lease.stepUpSchedule.length > 0) {
+                let effectiveStepRentPerSF = lease.currentRentPerSF; // Start with base SF rent
+                const sortedSchedule = [...lease.stepUpSchedule].sort((a, b) => a.yearInLeaseTerm - b.yearInLeaseTerm);
+                for (const step of sortedSchedule) {
+                    if (currentLeaseYearNumber >= step.yearInLeaseTerm) {
+                        effectiveStepRentPerSF = step.rentPerSF;
+                    } else {
+                        break; // Stop if current year is before this step's effective year
+                    }
+                }
+                currentYearLeaseRent = lease.squareFeet * effectiveStepRentPerSF;
+            } else if (lease.escalationType === 'cpi') {
+                const escalationRateToApply = lease.cpiEscalationRatePercent ?? inputs.globalMarketRentGrowthPercent;
+                const reviewFrequency = lease.cpiReviewFrequencyYears ?? 1; // Default to 1 year if not specified
+                
+                if (currentLeaseYearNumber > 0 && reviewFrequency > 0) {
+                    // Calculate the number of full annual escalations that should have occurred by the start of the last review period.
+                    // Rent stays flat between reviews. Escalation is applied based on compounded annual rate at review points.
+                    const yearOfLastReviewApplication = Math.floor((currentLeaseYearNumber - 1) / reviewFrequency) * reviewFrequency;
+                    currentYearLeaseRent = baseAnnualRent * Math.pow(1 + escalationRateToApply / 100, yearOfLastReviewApplication);
+                } else {
+                    currentYearLeaseRent = baseAnnualRent; // Base rent if review frequency is invalid or it's before the first potential review
+                }
             } else if (lease.escalationType === 'stepUp' || lease.escalationType === 'cpi') {
-                // TODO: Implement 'stepUp' and 'cpi' escalations.
-                // For now, they will default to no escalation beyond base rent for this lease.
-                console.warn(`Escalation type '${lease.escalationType}' for lease '${lease.suite}' is not yet fully implemented and will use base rent without further escalation in projectSingleLeaseCashFlows.`);
+                 // Handles cases where stepUpSchedule is missing/empty or cpi fields are such that no specific logic applied.
+                 console.warn(`Escalation type '${lease.escalationType}' for lease '${lease.suite}' may not have sufficient data for full calculation (e.g. empty stepUpSchedule). Using base rent.`);
+                 currentYearLeaseRent = baseAnnualRent;
             }
+            // If no escalation type matches or specific conditions aren't met, currentYearLeaseRent remains baseAnnualRent.
 
             yearDetail.scheduledRent = currentYearLeaseRent;
 
@@ -180,29 +205,52 @@ function projectSingleLeaseCashFlows(
  * Calculates total operating expenses for a given year, inflated.
  */
 function calculateAnnualOperatingExpenses(
-    baseOpex: OpexBuckets,
-    yearIndex: number, // 0-indexed (e.g., Year 1 of projection is index 0)
-    expenseInflationPercent: number,
-    currentYearEGIForMgmtFee: number // EGI used specifically for management fee calculation for the current year.
+    baseOpex: OpexBuckets, // Updated type
+    yearIndex: number, // 0-indexed
+    globalExpenseInflationPercent: number, // Fallback inflation
+    currentYearEGIForMgmtFee: number
 ): { totalOpex: number, recoverableOpexTotal: number } {
-    const inflationFactor = Math.pow(1 + expenseInflationPercent / 100, yearIndex);
-    
-    const inflatedTaxes = baseOpex.taxes * inflationFactor;
-    const inflatedInsurance = baseOpex.insurance * inflationFactor;
-    const inflatedRM = baseOpex.repairsMaintenance * inflationFactor;
-    const inflatedReserves = baseOpex.reserves * inflationFactor;
-    
-    // recoverableOpexTotal typically includes taxes, insurance, and CAM (Repairs & Maintenance).
-    // Utilities might also be included if applicable and structured that way.
-    const recoverableOpexTotal = inflatedTaxes + inflatedInsurance + inflatedRM;
-    
-    // Management fee is calculated based on the EGI passed to this function.
-    // This EGI should ideally be the one that includes any applicable reimbursements.
-    const managementFee = currentYearEGIForMgmtFee * (baseOpex.managementPercentOfEGI / 100);
+    let totalOpexCalc = 0;
+    let recoverableOpexTotalCalc = 0;
 
-    const totalOpex = recoverableOpexTotal + managementFee + inflatedReserves;
-    
-    return { totalOpex, recoverableOpexTotal };
+    const expenseKeys = Object.keys(baseOpex) as Array<keyof OpexBuckets>;
+
+    for (const key of expenseKeys) {
+        if (key === 'managementPercentOfEGI') continue; // Handle management fee separately
+
+        const expenseItem = baseOpex[key];
+        if (!expenseItem || typeof expenseItem.amount !== 'number') continue; // Skip if item is invalid
+
+        const itemSpecificInflation = expenseItem.inflationRate ?? globalExpenseInflationPercent;
+        const inflationFactor = Math.pow(1 + itemSpecificInflation / 100, yearIndex);
+        const inflatedAmount = expenseItem.amount * inflationFactor;
+
+        totalOpexCalc += inflatedAmount;
+
+        // Determine recoverability
+        const isTypicallyRecoverable = key === 'taxes' || key === 'insurance' || key === 'repairsMaintenance';
+        if (expenseItem.isRecoverable === true || (expenseItem.isRecoverable === undefined && isTypicallyRecoverable)) {
+            recoverableOpexTotalCalc += inflatedAmount;
+        }
+    }
+
+    // Management Fee Calculation
+    const mgmtFeeItem = baseOpex.managementPercentOfEGI;
+    let mgmtFeePercentage = mgmtFeeItem.amount; // This is the percentage, e.g., 3 for 3%
+
+    // Optional: Inflate the management fee percentage itself if inflationRate is provided on the mgmtFeeItem
+    if (mgmtFeeItem.inflationRate !== undefined && mgmtFeeItem.inflationRate !== null) {
+        const mgmtFeeInflationFactor = Math.pow(1 + mgmtFeeItem.inflationRate / 100, yearIndex);
+        mgmtFeePercentage *= mgmtFeeInflationFactor; // Inflate the percentage
+    }
+
+    const managementFee = currentYearEGIForMgmtFee * (mgmtFeePercentage / 100);
+    totalOpexCalc += managementFee;
+
+    // Note: Management fee is typically not added to 'recoverableOpexTotalCalc' for NNN purposes.
+    // If specific lease terms dictate it's recoverable, that would be a more complex adjustment.
+
+    return { totalOpex: totalOpexCalc, recoverableOpexTotal: recoverableOpexTotalCalc };
 }
 
 /**
@@ -243,8 +291,8 @@ export function buildFullDCFCashFlows(inputs: AppraisalInputs): DCFResults | nul
         const currentYear = i + 1;
         let yearCF: Partial<AnnualCashFlowDCF> = { year: currentYear };
 
-        yearCF.potentialBaseRent = 0; 
-        yearCF.scheduledEscalationsRevenue = 0; 
+        yearCF.potentialBaseRent = 0; // Note: These seem to be legacy/unused if totalScheduledRentalRevenue is primary.
+        yearCF.scheduledEscalationsRevenue = 0; // Note: Also seems legacy if included in totalScheduledRentalRevenue.
         yearCF.totalScheduledRentalRevenue = 0;
         yearCF.tenantImprovementsAndLcs = 0;
         
@@ -255,62 +303,83 @@ export function buildFullDCFCashFlows(inputs: AppraisalInputs): DCFResults | nul
                 yearCF.tenantImprovementsAndLcs! += detailForThisYear.tiCosts + detailForThisYear.lcCosts;
             }
         });
-
-        // Step 1: Calculate Potential Rental Income and associated vacancy/credit loss
-        // Note: This model currently does not include speculative income from leasing up vacant space 
-        // beyond existing lease renewals. The generalVacancyLossPercentForProjections accounts for 
-        // vacancy on scheduled and renewal income, but not for new income from currently unleased space.
+        
+        // Market rent from vacancy (speculative new leases beyond renewals)
+        // This model currently assumes this is zero, focusing on in-place and renewal.
         yearCF.potentialMarketRentFromVacancy = 0; 
 
+        // Calculate total potential rental income before vacancy/credit loss
         const potentialRentalIncome = yearCF.totalScheduledRentalRevenue! + yearCF.potentialMarketRentFromVacancy!;
         const vacancyLossOnRental = potentialRentalIncome * (inputs.generalVacancyRatePercentForProjections / 100);
         const creditLossOnRental = (potentialRentalIncome - vacancyLossOnRental) * (inputs.creditCollectionLossPercent / 100);
         const effectiveGrossRentalIncome = potentialRentalIncome - vacancyLossOnRental - creditLossOnRental;
 
-        // Step 2: Calculate Operating Expenses and NNN Reimbursements
-        // Temporarily use effectiveGrossRentalIncome for management fee calculation.
-        // This will be refined if EGI for mgmt fee needs to include reimbursements definitively.
+        // Calculate Other Income for the current year
+        let currentYearOtherIncome = 0;
+        if (inputs.otherIncome && inputs.otherIncome.length > 0) {
+            inputs.otherIncome.forEach(item => {
+                const itemGrowthRate = item.growthRate ?? inputs.globalMarketRentGrowthPercent;
+                const inflatedAmount = item.amount * Math.pow(1 + itemGrowthRate / 100, i); // i is 0-indexed year
+                currentYearOtherIncome += inflatedAmount;
+            });
+        }
+
+        // Calculate Operating Expenses. 
+        // For the first pass of management fee calculation, use an EGI that does NOT include other income or reimbursements yet,
+        // as these are often calculated *after* basic rental EGI. 
+        // However, the prompt implies management fee is on final EGI. Let's use effectiveGrossRentalIncome for initial calculation.
+        // This will be adjusted later if needed.
         const opexResults = calculateAnnualOperatingExpenses(
             inputs.operatingExpensesBuckets,
             i, // 0-indexed year for inflation
             inputs.globalExpenseInflationPercent,
-            effectiveGrossRentalIncome // EGI used for management fee calculation
+            effectiveGrossRentalIncome // Initial EGI for management fee calculation
         );
         
         yearCF.operatingExpenses = opexResults.totalOpex;
-        // Assume 100% of recoverable expenses (current year's inflated taxes, insurance, R&M) 
-        // are reimbursed if there's at least one NNN lease in the rent roll.
-        // A more granular model could check the reimbursement type of each active lease 
-        // and sum reimbursements accordingly, or apply a property-level reimbursement percentage.
+        
+        // NNN Reimbursements
+        // This uses the correctly calculated recoverableOpexTotal from the updated function.
         yearCF.tenantReimbursementsNNN = inputs.rentRoll.some(l => l.reimbursementType === 'nnn') 
             ? opexResults.recoverableOpexTotal 
             : 0;
 
-        // Step 3: Recalculate Potential Gross Income (PGI) and Effective Gross Income (EGI)
-        // PGI now includes scheduled rent, market rent (if any), and NNN reimbursements.
+        // Recalculate Potential Gross Revenue (PGI) including rental income, reimbursements, and other income.
         yearCF.potentialGrossRevenue = yearCF.totalScheduledRentalRevenue! + 
                                        yearCF.tenantReimbursementsNNN! + 
+                                       currentYearOtherIncome + // Added other income
                                        yearCF.potentialMarketRentFromVacancy!;
         
-        // Vacancy and Credit Loss are typically applied only to rental income components 
-        // (scheduled rent, market rent from vacancy), not to NNN reimbursements (which are actual expense recoveries)
-        // or other income like parking, etc. (if modeled separately).
-        // Thus, vacancyLossOnRental and creditLossOnRental calculated in Step 1 are used here.
+        // Vacancy and Credit Loss are typically applied only to rental income components.
+        // Other income and reimbursements are usually not subject to these losses in the same way.
         yearCF.generalVacancyLoss = vacancyLossOnRental;
         yearCF.creditLoss = creditLossOnRental;
         
-        // Final EGI for the year.
+        // Final Effective Gross Income (EGI) for the year.
         yearCF.effectiveGrossIncome = yearCF.potentialGrossRevenue - yearCF.generalVacancyLoss - yearCF.creditLoss;
         
-        // Step 4: Adjust Management Fee if it's based on EGI inclusive of reimbursements.
-        // The initial management fee in `opexResults.totalOpex` was based on `effectiveGrossRentalIncome`.
-        // If the final EGI (including reimbursements) is different, the management fee needs adjustment.
-        // This ensures the management fee is calculated on the correct EGI base as per typical industry practice.
+        // Adjust Management Fee if it's based on the final EGI (inclusive of reimbursements and other income).
+        // The initial management fee calculation in opexResults used effectiveGrossRentalIncome.
+        // If the final EGI is different, we need to adjust the fee and total operating expenses.
         if (yearCF.effectiveGrossIncome !== effectiveGrossRentalIncome) {
-             const mgmtFeeFinal = yearCF.effectiveGrossIncome * (inputs.operatingExpensesBuckets.managementPercentOfEGI / 100);
-             const mgmtFeeInitial = effectiveGrossRentalIncome * (inputs.operatingExpensesBuckets.managementPercentOfEGI / 100);
-             // Adjust total operating expenses by the difference in calculated management fee.
-             yearCF.operatingExpenses = yearCF.operatingExpenses - mgmtFeeInitial + mgmtFeeFinal; 
+            let finalMgmtFeePercentage = inputs.operatingExpensesBuckets.managementPercentOfEGI.amount;
+            // Optional: Inflate the management fee percentage itself if its inflationRate is provided
+            if (inputs.operatingExpensesBuckets.managementPercentOfEGI.inflationRate !== undefined && inputs.operatingExpensesBuckets.managementPercentOfEGI.inflationRate !== null) {
+                 const mgmtFeeInflationFactor = Math.pow(1 + inputs.operatingExpensesBuckets.managementPercentOfEGI.inflationRate / 100, i); // i is 0-indexed year
+                 finalMgmtFeePercentage *= mgmtFeeInflationFactor;
+            }
+            const mgmtFeeFinal = yearCF.effectiveGrossIncome * (finalMgmtFeePercentage / 100);
+            
+            // The initial management fee was already included in opexResults.totalOpex.
+            // We need to find the initial fee amount to correctly adjust.
+            let initialMgmtFeePercentage = inputs.operatingExpensesBuckets.managementPercentOfEGI.amount;
+             if (inputs.operatingExpensesBuckets.managementPercentOfEGI.inflationRate !== undefined && inputs.operatingExpensesBuckets.managementPercentOfEGI.inflationRate !== null) {
+                 const mgmtFeeInflationFactor = Math.pow(1 + inputs.operatingExpensesBuckets.managementPercentOfEGI.inflationRate / 100, i);
+                 initialMgmtFeePercentage *= mgmtFeeInflationFactor;
+            }
+            const mgmtFeeInitial = effectiveGrossRentalIncome * (initialMgmtFeePercentage / 100);
+            
+            yearCF.operatingExpenses = yearCF.operatingExpenses - mgmtFeeInitial + mgmtFeeFinal; 
         }
 
         yearCF.netOperatingIncome = yearCF.effectiveGrossIncome - yearCF.operatingExpenses;
