@@ -46,25 +46,25 @@ const createNewComparable = (): ComparableSale => ({
   saleDate: new Date().toISOString().split('T')[0],
   salePrice: 1000000,
   gba: 10000,
-  propertyRightsConveyed: 'Fee Simple',
-  financingTerms: 'Conventional',
-  conditionOfSale: 'Arms-length',
-  locationQuality: 'Average',
-  siteUtility: 'Average',
+  propertyRightsConveyed: 'feeSimple', // Updated to use PropertyRights type
+  financingTerms: 'Conventional', // Updated to use FinancingTerms type
+  conditionOfSale: 'ArmsLength', // Updated to use ConditionOfSale type
+  locationQuality: 'Average', // Updated to use LocationQuality type
+  siteUtility: 'Average', // Updated to use SiteUtility type
   adjustments: { ...initialSalesCompAdjustments },
 });
 
 const createNewRentRollEntry = (): RentRollEntry => ({
     id: uuidv4(),
     suite: '',
-    useType: 'Office', // DCF field
+    useType: 'Office', // Valid UseType
     squareFeet: 1000,
     currentRentPerSF: 15,
     leaseStartDate: new Date().toISOString().split('T')[0],
     leaseEndDate: new Date(new Date().setFullYear(new Date().getFullYear() + 5)).toISOString().split('T')[0],
-    escalationType: 'fixedPercent', // DCF field
+    escalationType: 'fixedPercent', 
     escalationPercent: 2.5,
-    escalationDetail: '', // DCF field
+    escalationDetail: '', // Initialized as empty string
     reimbursementType: 'nnn',
     renewalProbabilityPercent: 75,
     renewTermYears: 5, // DCF field
@@ -176,7 +176,7 @@ const initialInputs: AppraisalInputs = {
   esgRiskDetail: '',
 
   // Climate-resilience
-  femaFloodHazardClass: 'X',
+  femaFloodHazardClass: 'X', // Valid FemaFloodZone
   seaLevelRise2050ScenarioAffected: false,
   wildFireRiskIndex: 1, 
   hurricaneRiskIndex: 1, 
@@ -247,30 +247,34 @@ const App: React.FC = () => {
     rentGrowth?: number;
   } | null>(null);
 
+const NUMERIC_FIELDS_REQUIRING_NUMBER: (keyof AppraisalInputs)[] = [
+    'accessFrontageFeet', 'accessCurbCuts', 'gba', 'rentableSF', 'usableSF', 'actualAge', 'effectiveAge',
+    'grossPotentialIncome', 'vacancyLossPercent', 'creditCollectionLossPercent', 'capRateIncome',
+    'marketRentPerSF', 'inPlaceRentPerSF', 'opexVolatilityPercent', 'propertyTaxAppealProbability',
+    'annualMarketConditionsAdjustmentPercent', 'landValue', 'improvementCostNew', 'economicLife',
+    'annualCostIndexEscalationPercent', 'incomeApproachWeight', 'salesApproachWeight', 'costApproachWeight',
+    'energyStarScore', 'energyUseIntensity', 'scope1CarbonEmissions', 'wildFireRiskIndex',
+    'hurricaneRiskIndex', 'heatStressRiskIndex', 'weightedAverageLeaseTerm', 'expenseStopPerSF',
+    'percentageRentBreakpoint', 'percentageRentOveragePercent', 'freeRentMonths',
+    'tiAllowancePerSF', 'lcAllowancePerSF', 'downtimeBetweenLeasesMonths', 'relettingCostPercentOfRent',
+    'exitCapRate', 'targetUnleveredIRR', 'dcrThreshold', 'saleCostPercent',
+    'projectionYears', 'globalMarketRentGrowthPercent', 'globalExpenseInflationPercent',
+    'generalVacancyRatePercentForProjections', 'discountRatePercent',
+    'salesCompCustomValue'
+];
 
   const handleInputChange = useCallback(<F extends keyof AppraisalInputs>(field: F, value: AppraisalInputs[F]) => {
     let processedValue = value;
-    const numericFieldsRequiringNumber = [
-        'accessFrontageFeet', 'accessCurbCuts', 'gba', 'rentableSF', 'usableSF', 'actualAge', 'effectiveAge',
-        'grossPotentialIncome', 'vacancyLossPercent', 'creditCollectionLossPercent', 'capRateIncome',
-        'marketRentPerSF', 'inPlaceRentPerSF', 'opexVolatilityPercent', 'propertyTaxAppealProbability',
-        'annualMarketConditionsAdjustmentPercent', 'landValue', 'improvementCostNew', 'economicLife',
-        'annualCostIndexEscalationPercent', 'incomeApproachWeight', 'salesApproachWeight', 'costApproachWeight',
-        'energyStarScore', 'energyUseIntensity', 'scope1CarbonEmissions', 'wildFireRiskIndex',
-        'hurricaneRiskIndex', 'heatStressRiskIndex', 'weightedAverageLeaseTerm', 'expenseStopPerSF',
-        'percentageRentBreakpoint', 'percentageRentOveragePercent', 'freeRentMonths',
-        'tiAllowancePerSF', 'lcAllowancePerSF', 'downtimeBetweenLeasesMonths', 'relettingCostPercentOfRent',
-        'exitCapRate', 'targetUnleveredIRR', 'dcrThreshold', 'saleCostPercent',
-        'projectionYears', 'globalMarketRentGrowthPercent', 'globalExpenseInflationPercent',
-        'generalVacancyRatePercentForProjections', 'discountRatePercent',
-        'salesCompCustomValue' // Added
-    ];
 
-    if (numericFieldsRequiringNumber.includes(field as string)) {
+    if (NUMERIC_FIELDS_REQUIRING_NUMBER.includes(field as any)) {
         if (typeof value === 'string') {
-            const parsed = parseFloat(value);
-             // Allow empty string for typing, otherwise parse or default to 0 if truly invalid
-            processedValue = (value.trim() === '' || value.trim() === '-') ? value as any : (isNaN(parsed) ? 0 : parsed) as AppraisalInputs[F];
+            const trimmedValue = value.trim();
+            if (trimmedValue === '' || trimmedValue === '-') {
+                processedValue = value as any; // Keep as is for typing
+            } else {
+                const parsed = parseFloat(trimmedValue);
+                processedValue = isNaN(parsed) ? 0 : parsed as any;
+            }
         } else if (typeof value === 'number' && isNaN(value)) {
             processedValue = 0 as AppraisalInputs[F];
         }
@@ -281,37 +285,23 @@ const App: React.FC = () => {
 
   const handleInputBlur = <F extends keyof AppraisalInputs>(field: F) => {
     const value = inputs[field];
-     const numericFieldsRequiringNumber = [ // Duplicated for brevity, consider centralizing
-        'accessFrontageFeet', 'accessCurbCuts', 'gba', 'rentableSF', 'usableSF', 'actualAge', 'effectiveAge',
-        'grossPotentialIncome', 'vacancyLossPercent', 'creditCollectionLossPercent', 'capRateIncome',
-        'marketRentPerSF', 'inPlaceRentPerSF', 'opexVolatilityPercent', 'propertyTaxAppealProbability',
-        'annualMarketConditionsAdjustmentPercent', 'landValue', 'improvementCostNew', 'economicLife',
-        'annualCostIndexEscalationPercent', 'incomeApproachWeight', 'salesApproachWeight', 'costApproachWeight',
-        'energyStarScore', 'energyUseIntensity', 'scope1CarbonEmissions', 'wildFireRiskIndex',
-        'hurricaneRiskIndex', 'heatStressRiskIndex', 'weightedAverageLeaseTerm', 'expenseStopPerSF',
-        'percentageRentBreakpoint', 'percentageRentOveragePercent', 'freeRentMonths',
-        'tiAllowancePerSF', 'lcAllowancePerSF', 'downtimeBetweenLeasesMonths', 'relettingCostPercentOfRent',
-        'exitCapRate', 'targetUnleveredIRR', 'dcrThreshold', 'saleCostPercent',
-        'projectionYears', 'globalMarketRentGrowthPercent', 'globalExpenseInflationPercent',
-        'generalVacancyRatePercentForProjections', 'discountRatePercent',
-        'salesCompCustomValue' // Added
-    ];
-    if (numericFieldsRequiringNumber.includes(field as string) && typeof value === 'string') {
-        const numericValue = parseFloat(value);
+    if (NUMERIC_FIELDS_REQUIRING_NUMBER.includes(field as any) && typeof value === 'string') {
+        const numericValue = parseFloat(value.trim());
         setInputs(prev => ({ ...prev, [field]: isNaN(numericValue) ? 0 : numericValue }));
     }
 
-    // Specific validation toasts on blur
+    // Specific validation warnings on blur
+    // TODO: Consider implementing a more user-friendly notification system (e.g., toast messages or inline field errors)
     if (field === 'discountRatePercent') {
-        const rate = inputs.discountRatePercent;
+        const rate = typeof inputs.discountRatePercent === 'number' ? inputs.discountRatePercent : parseFloat(inputs.discountRatePercent as string);
         if (rate < 2 || rate > 20) {
-            alert(`Warning: Discount Rate (${rate}%) is outside typical range (2% - 20%).`);
+            console.warn(`Warning: Discount Rate (${rate}%) is outside typical range (2% - 20%).`);
         }
     }
     if (field === 'exitCapRate') {
-        const rate = inputs.exitCapRate;
+        const rate = typeof inputs.exitCapRate === 'number' ? inputs.exitCapRate : parseFloat(inputs.exitCapRate as string);
          if (rate < 2 || rate > 12) {
-            alert(`Warning: Exit Cap Rate (${rate}%) is outside typical range (2% - 12%).`);
+            console.warn(`Warning: Exit Cap Rate (${rate}%) is outside typical range (2% - 12%).`);
         }
     }
   };
@@ -383,7 +373,7 @@ const App: React.FC = () => {
 
   const handleRemoveComparable = useCallback((index: number) => {
     if (inputs.salesComparables.length <= 1) { 
-        alert("At least one comparable sale is required.");
+        alert("At least one comparable sale is required."); // TODO: Consider replacing alert with a less intrusive UI notification.
         return;
     }
     setInputs(prev => ({
@@ -401,12 +391,23 @@ const App: React.FC = () => {
   }, []);
 
   const handleRolloverScheduleChange = useCallback((index: number, value: string) => {
-    const numericValue = parseFloat(value);
-    if (isNaN(numericValue) && value.trim() !== '' && value.trim() !== '-') return; 
+    const trimmedValue = value.trim();
+    let valToSet: number;
+
+    if (trimmedValue === '') {
+      valToSet = 0; // Default to 0 if empty
+    } else {
+      const numericValue = parseFloat(trimmedValue);
+      if (isNaN(numericValue)) {
+        valToSet = 0; // Default to 0 if not a valid number (and not empty)
+      } else {
+        valToSet = numericValue;
+      }
+    }
+    
     setInputs(prev => {
       const newSchedule = [...prev.annualRolloverSchedule];
-      const valToSet = isNaN(numericValue) ? (value.trim() === '' ? 0 : prev.annualRolloverSchedule[index]) : numericValue;
-      newSchedule[index] = valToSet; 
+      newSchedule[index] = valToSet;
       return { ...prev, annualRolloverSchedule: newSchedule };
     });
   }, []);
@@ -423,6 +424,8 @@ const App: React.FC = () => {
 
 
   // Full DCF Calculation
+  // These are the primary DCF results for the valuation, incorporating scenario overrides if active.
+  // The `buildFullDCFCashFlows` function from `dcf.ts` is the core DCF engine.
   const dcfResults = useMemo<DCFResults | null>(() => {
     // Use scenario overrides if they exist, otherwise use base inputs
     const currentInputs = { ...inputs };
@@ -444,13 +447,15 @@ const App: React.FC = () => {
 
   const baseDcfValueForScenario = useMemo(() => { // DCF Value with base inputs, for scenario drawer comparison
     if(inputs.projectionYears > 0 && inputs.rentRoll.length > 0) {
-        const baseResults = buildFullDCFCashFlows(inputs);
+        const baseResults = buildFullDCFCashFlows(inputs); // Uses base inputs without overrides
         return baseResults?.dcfValue || 0;
     }
     return 0;
   }, [inputs]);
 
-
+  // Calculates the Income Approach value using Direct Capitalization.
+  // It prioritizes using Year 1 figures (NOI, PGI, etc.) from the `dcfResults` if available and positive.
+  // Otherwise, it falls back to calculating these based on the summary-level inputs provided in the UI.
   const incomeApproachResults = useMemo<IncomeApproachResults>(() => {
     const year1DCF = dcfResults?.projectedCashFlowsDCF.find(cf => cf.year === 1);
     return calcIncomeDirectCap(

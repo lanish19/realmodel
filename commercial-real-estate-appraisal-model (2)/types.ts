@@ -1,4 +1,7 @@
 
+// Definitions for specific string union types used throughout the application.
+
+export type UseType = 'Office' | 'Retail' | 'Industrial' | 'MixedUse' | 'Residential' | 'SpecialPurpose' | 'Other' | '';
 export type PropertyRights = 'feeSimple' | 'leasedFee' | 'leasehold' | '';
 export type TopographyOptions = 'level' | 'sloping' | 'hilly' | '';
 export type QualityOptions = 'A' | 'B' | 'C' | '';
@@ -9,10 +12,17 @@ export type CostApproachCostType = 'replacement' | 'reproduction' | '';
 export type LEEDCertificationLevel = 'none' | 'certified' | 'silver' | 'gold' | 'platinum' | '';
 export type ESGRiskCategory = 'none' | 'environmental' | 'social' | 'governance' | '';
 export type CreditRating = 'AAA' | 'AA' | 'A' | 'BBB' | 'BB' | 'B' | 'CCC' | 'CC' | 'C' | 'D' | 'NA' | '';
+export type FemaFloodZone = 'X' | 'A' | 'AE' | 'VE' | 'AO' | 'D' | 'ShadedX' | 'Other' | '';
 
 // Types for Phase 2 - Multi-tenant & Cash Flows
 export type ReimbursementType = 'gross' | 'nnn' | 'modifiedGross' | '';
 export type EscalationType = 'fixedPercent' | 'stepUp' | 'cpi' | ''; // For DCF
+
+// Comparable Sale Specific Types
+export type FinancingTerms = 'Cash' | 'Conventional' | 'SellerFinanced' | 'AssumedLoan' | 'Other' | '';
+export type ConditionOfSale = 'ArmsLength' | 'REO' | 'ShortSale' | 'EstateSale' | 'RelatedParty' | 'Other' | '';
+export type LocationQuality = 'Prime' | 'Secondary' | 'Tertiary' | 'Average' | 'Inferior' | 'Superior' | '';
+export type SiteUtility = 'Good' | 'Average' | 'Poor' | 'Excellent' | 'Fair' | '';
 
 export interface RentRollEntry {
   id: string; // UUID
@@ -23,10 +33,11 @@ export interface RentRollEntry {
   leaseEndDate: string; // YYYY-MM-DD
   
   // DCF Specific Fields
-  useType: string; // e.g., Office, Retail, Industrial
+  useType: UseType; 
   escalationType: EscalationType; 
   escalationPercent: number; // Annual % (used if escalationType is fixedPercent)
-  escalationDetail: string; // Placeholder for complex escalations (e.g., JSON for step-ups)
+  // Placeholder for future complex escalation structures, e.g., for 'stepUp' or 'cpi'. Currently unused by logic.
+  escalationDetail: string; 
   
   reimbursementType: ReimbursementType;
   
@@ -116,11 +127,11 @@ export interface ComparableSale {
   saleDate: string; // YYYY-MM-DD
   salePrice: number;
   gba: number; // Gross Building Area
-  propertyRightsConveyed: string; // e.g., Fee Simple, Leased Fee
-  financingTerms: string; // e.g., Cash, Conventional, Seller-financed
-  conditionOfSale: string; // e.g., Arms-length, REO, Short Sale
-  locationQuality: string; // e.g., Prime, Secondary, Tertiary
-  siteUtility: string; // e.g., Good, Average, Poor
+  propertyRightsConveyed: PropertyRights; 
+  financingTerms: FinancingTerms; 
+  conditionOfSale: ConditionOfSale; 
+  locationQuality: LocationQuality; 
+  siteUtility: SiteUtility; 
   adjustments: SalesCompAdjustments;
 }
 
@@ -225,7 +236,7 @@ export interface AppraisalInputs {
   esgRiskDetail: string;
 
   // Climate-resilience variables
-  femaFloodHazardClass: string; 
+  femaFloodHazardClass: FemaFloodZone; 
   seaLevelRise2050ScenarioAffected: boolean; 
   wildFireRiskIndex: number; 
   hurricaneRiskIndex: number; 

@@ -5,16 +5,22 @@ import {
   SalesCompValueSelectionType
 } from '../types';
 
+/**
+ * Calculates the Income Approach value using Direct Capitalization.
+ * Prioritizes Year 1 Net Operating Income (NOI) and its constituent parts (PGI, Vacancy, Credit Loss, OpEx, Management Fee)
+ * from a detailed cash flow projection (e.g., DCF analysis) if `year1ProjectedNOI` is provided and positive.
+ * Otherwise, it calculates these figures based on the summary inputs provided in `inputs` and `opexBuckets`.
+ */
 export const calcIncomeDirectCap = (
   inputs: Pick<AppraisalInputs, 'rentableSF' | 'marketRentPerSF' | 'grossPotentialIncome' | 'vacancyLossPercent' | 'creditCollectionLossPercent' | 'capRateIncome'>,
   opexBuckets: OpexBuckets,
-  year1ProjectedNOI?: number, // Optional: Year 1 NOI from detailed cash flow
-  year1ProjectedPGI?: number,
-  year1ProjectedVacancyLoss?: number,
+  year1ProjectedNOI?: number, // Optional: Year 1 NOI from detailed cash flow projection.
+  year1ProjectedPGI?: number, // Optional: Year 1 PGI from detailed cash flow projection.
+  year1ProjectedVacancyLoss?: number, // Optional: Year 1 Vacancy Loss from detailed cash flow projection.
   year1ProjectedCreditLoss?: number,
-  year1ProjectedEGI?: number,
-  year1ProjectedOpex?: number,
-  year1ProjectedMgmtFee?: number
+  year1ProjectedEGI?: number, // Optional: Year 1 EGI from detailed cash flow projection.
+  year1ProjectedOpex?: number, // Optional: Year 1 Operating Expenses from detailed cash flow projection.
+  year1ProjectedMgmtFee?: number // Optional: Year 1 Management Fee from detailed cash flow projection.
 ): IncomeApproachResults => {
   let pgi: number;
   let vacancyLoss: number;
@@ -70,7 +76,18 @@ export const calcIncomeDirectCap = (
   };
 };
 
-// This generateCashFlows is the simpler version. DCF will use buildFullDCFCashFlows from dcf.ts
+/**
+ * Generates a series of annual cash flows based on summary inputs and basic rent roll escalations.
+ * 
+ * !!! IMPORTANT NOTE FOR DEVELOPERS !!!
+ * This `generateCashFlows` function provides a SIMPLIFIED cash flow projection.
+ * It is NOT CURRENTLY USED for the primary Discounted Cash Flow (DCF) valuation 
+ * displayed and relied upon in the application. The main DCF valuation is performed by 
+ * `buildFullDCFCashFlows` located in `dcf.ts`, which incorporates more detailed
+ * lease-by-lease projections and specific DCF assumptions.
+ * This function might be intended for a simpler, non-DCF cash flow view or for future features,
+ * but it should not be confused with the primary DCF engine.
+ */
 export const generateCashFlows = (inputs: AppraisalInputs): AnnualCashFlow[] => {
   const annualCashFlows: AnnualCashFlow[] = [];
   const baseOpex = inputs.operatingExpensesBuckets;
@@ -270,7 +287,13 @@ export const reconcileValues = (
   return isNaN(weightedSum) ? 0 : weightedSum;
 };
 
-
+/**
+ * Validates the user-provided `AppraisalInputs`.
+ * Checks for logical consistency (e.g., dates), required fields, valid numeric ranges,
+ * and adherence to expected patterns for various input fields.
+ * Returns a record of error messages, where keys are field names and values are error descriptions.
+ * An empty record signifies no validation errors.
+ */
 export const validateInputs = (inputs: AppraisalInputs): Record<string, string> => {
   const errors: Record<string, string> = {};
 
@@ -323,16 +346,20 @@ export const validateInputs = (inputs: AppraisalInputs): Record<string, string> 
   checkNonNegative('actualAge', 'Actual Age');
   checkNonNegative('effectiveAge', 'Effective Age');
   if (inputs.effectiveAge > inputs.actualAge) {
-    // errors.effectiveAge = 'Effective Age generally should not exceed Actual Age.';
+    errors.effectiveAge = 'Effective Age generally should not exceed Actual Age unless specific conditions apply.';
   }
   if (inputs.rentableSF > inputs.gba && inputs.gba > 0) errors.rentableSF = "Rentable SF cannot exceed GBA.";
   if (inputs.usableSF > inputs.rentableSF && inputs.rentableSF > 0) errors.usableSF = "Usable SF cannot exceed Rentable SF.";
+  if (!inputs.highestBestUse.narrative.trim()) errors['highestBestUse.narrative'] = "Highest & Best Use Narrative is required.";
 
 
   // Income Approach (Summary)
   checkNonNegative('grossPotentialIncome', 'Gross Potential Income (Summary)');
   checkPercentage('vacancyLossPercent', 'Vacancy Loss % (Summary)');
   checkPercentage('creditCollectionLossPercent', 'Credit/Collection Loss % (Summary)');
+  checkNonNegative('inPlaceRentPerSF', 'In-Place Rent/SF (Summary)');
+  checkPercentage('opexVolatilityPercent', 'OpEx Volatility % (Summary)', false, 100, 0);
+  checkPercentage('propertyTaxAppealProbability', 'Property Tax Appeal Probability % (Summary)', false, 100, 0);
   Object.entries(inputs.operatingExpensesBuckets).forEach(([key, value]) => {
     if (key === 'managementPercentOfEGI') {
       if (value < 0 || value > 100) errors[`opex-${key}`] = 'Management Fee % must be between 0 and 100.';
@@ -425,9 +452,9 @@ export const validateInputs = (inputs: AppraisalInputs): Record<string, string> 
 
   // Lease Details (Summary)
   checkNonNegative('weightedAverageLeaseTerm', 'WALT (Summary)');
-  inputs.annualRolloverSchedule.forEach((val, idx) => {
-    if (val < 0 || val > 100) errors[`rollover-year-${idx+1}`] = `Rollover for Year ${idx+1} must be between 0% and 100%.`;
-  });
+  // inputs.annualRolloverSchedule.forEach((val, idx) => { // This validation is now added below
+  //   if (val < 0 || val > 100) errors[`rollover-year-${idx+1}`] = `Rollover for Year ${idx+1} must be between 0% and 100%.`;
+  // });
   checkNonNegative('expenseStopPerSF', 'Expense Stop/SF (Summary)');
   checkNonNegative('percentageRentBreakpoint', 'Percentage Rent Breakpoint (Summary)');
   checkPercentage('percentageRentOveragePercent', 'Percentage Rent Overage % (Summary)');
@@ -440,6 +467,17 @@ export const validateInputs = (inputs: AppraisalInputs): Record<string, string> 
   // Market Capital
   checkPercentage('targetUnleveredIRR', 'Target Unlevered IRR %', false, 50);
   checkNonNegative('dcrThreshold', 'DCR Threshold');
+
+  // Rollover Schedule specific validation
+  inputs.annualRolloverSchedule.forEach((val, idx) => {
+    if (val < 0 || val > 100) {
+      errors[`rollover-year-${idx + 1}`] = `Rollover for Year ${idx + 1} must be between 0% and 100%.`;
+    }
+  });
+
+  // Mandatory narrative/text fields
+  if (!inputs.dataSourceDisclosure.trim()) errors.dataSourceDisclosure = "Data Source Disclosure is required.";
+  if (!inputs.reconciliationNarrative.trim()) errors.reconciliationNarrative = "Reconciliation Narrative is required.";
 
   return errors;
 };
