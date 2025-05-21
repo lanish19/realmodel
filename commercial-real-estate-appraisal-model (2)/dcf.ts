@@ -286,30 +286,73 @@ export function buildFullDCFCashFlows(inputs: AppraisalInputs): DCFResults | nul
         projectSingleLeaseCashFlows(lease, inputs)
     );
 
+    // Pre-computation for Market Leasing Assumptions
+    const initialVacantSF = inputs.rentableSF - inputs.rentRoll.reduce((sum, lease) => sum + lease.squareFeet, 0);
+    let cumulativeVacantSFFromPriorYearNonRenewals = 0;
+    let sfLeasedInPriorYearsAndStillActive = 0;
+
+
     // Iterate through each projection year to build the aggregate property cash flow.
     for (let i = 0; i < inputs.projectionYears; i++) {
         const currentYear = i + 1;
         let yearCF: Partial<AnnualCashFlowDCF> = { year: currentYear };
 
-        yearCF.potentialBaseRent = 0; // Note: These seem to be legacy/unused if totalScheduledRentalRevenue is primary.
-        yearCF.scheduledEscalationsRevenue = 0; // Note: Also seems legacy if included in totalScheduledRentalRevenue.
+        yearCF.potentialBaseRent = 0; 
+        yearCF.scheduledEscalationsRevenue = 0; 
         yearCF.totalScheduledRentalRevenue = 0;
-        yearCF.tenantImprovementsAndLcs = 0;
-        
-        allLeaseProjections.forEach(leaseDetailArray => {
-            const detailForThisYear = leaseDetailArray[i];
-            if (detailForThisYear) {
-                yearCF.totalScheduledRentalRevenue! += detailForThisYear.scheduledRent;
-                yearCF.tenantImprovementsAndLcs! += detailForThisYear.tiCosts + detailForThisYear.lcCosts;
+        yearCF.tenantImprovementsAndLcs = 0; // Initialize here
+
+        // Accumulate scheduled rent and TIs/LCs from existing/renewing leases
+        inputs.rentRoll.forEach((lease, leaseIdx) => {
+            const leaseProjectionForThisYear = allLeaseProjections[leaseIdx]?.[i];
+            if (leaseProjectionForThisYear) {
+                yearCF.totalScheduledRentalRevenue! += leaseProjectionForThisYear.scheduledRent;
+                yearCF.tenantImprovementsAndLcs! += leaseProjectionForThisYear.tiCosts + leaseProjectionForThisYear.lcCosts;
             }
         });
         
-        // Market rent from vacancy (speculative new leases beyond renewals)
-        // This model currently assumes this is zero, focusing on in-place and renewal.
-        yearCF.potentialMarketRentFromVacancy = 0; 
+        // Market Leasing Assumptions Logic
+        let sfNewlyVacantThisYearFromNonRenewals = 0;
+        inputs.rentRoll.forEach((lease, leaseIdx) => {
+            const leaseProjectionForThisYear = allLeaseProjections[leaseIdx]?.[i];
+            if (leaseProjectionForThisYear?.isVacantAfterExpiry) {
+                sfNewlyVacantThisYearFromNonRenewals += lease.squareFeet;
+            }
+        });
+
+        const totalVacantSFAtStartOfYear = Math.max(0, (i === 0 ? initialVacantSF : 0) + cumulativeVacantSFFromPriorYearNonRenewals - sfLeasedInPriorYearsAndStillActive);
+        
+        yearCF.potentialMarketRentFromVacancy = 0;
+        let newMarketLeaseTICostsThisYear = 0;
+        let newMarketLeaseLCCostsThisYear = 0;
+
+        if (inputs.marketLeasingAssumptions && totalVacantSFAtStartOfYear > 0) {
+            const mla = inputs.marketLeasingAssumptions;
+            const timeToLeaseMonths = mla.timeToLeaseVacantSFMonths;
+            const sfToLeaseThisYear = totalVacantSFAtStartOfYear; // Attempt to lease all available in the pool
+
+            const inflatedMarketRentPerSF = mla.marketRentNewLeasePerSF * Math.pow(1 + inputs.globalMarketRentGrowthPercent / 100, i);
+            const downtimeFactor = Math.max(0, (12 - timeToLeaseMonths)) / 12; 
+            
+            const rentFromNewlyLeasedSF = sfToLeaseThisYear * inflatedMarketRentPerSF * downtimeFactor;
+            yearCF.potentialMarketRentFromVacancy = rentFromNewlyLeasedSF;
+
+            const tiForNewlyLeasedSF = sfToLeaseThisYear * mla.newLeaseTiPerSF;
+            const firstYearFullRentForLC = sfToLeaseThisYear * inflatedMarketRentPerSF; // Non-downtime adjusted for LC base
+            const lcForNewlyLeasedSF = firstYearFullRentForLC * (mla.newLeaseLcPercent / 100);
+            
+            newMarketLeaseTICostsThisYear = tiForNewlyLeasedSF;
+            newMarketLeaseLCCostsThisYear = lcForNewlyLeasedSF;
+            
+            sfLeasedInPriorYearsAndStillActive += sfToLeaseThisYear; // Update SF leased tracker
+        }
+        
+        yearCF.tenantImprovementsAndLcs! += newMarketLeaseTICostsThisYear + newMarketLeaseLCCostsThisYear;
+        cumulativeVacantSFFromPriorYearNonRenewals += sfNewlyVacantThisYearFromNonRenewals;
+
 
         // Calculate total potential rental income before vacancy/credit loss
-        const potentialRentalIncome = yearCF.totalScheduledRentalRevenue! + yearCF.potentialMarketRentFromVacancy!;
+        const potentialRentalIncome = yearCF.totalScheduledRentalRevenue! + (yearCF.potentialMarketRentFromVacancy || 0);
         const vacancyLossOnRental = potentialRentalIncome * (inputs.generalVacancyRatePercentForProjections / 100);
         const creditLossOnRental = (potentialRentalIncome - vacancyLossOnRental) * (inputs.creditCollectionLossPercent / 100);
         const effectiveGrossRentalIncome = potentialRentalIncome - vacancyLossOnRental - creditLossOnRental;
@@ -338,15 +381,53 @@ export function buildFullDCFCashFlows(inputs: AppraisalInputs): DCFResults | nul
         
         yearCF.operatingExpenses = opexResults.totalOpex;
         
-        // NNN Reimbursements
-        // This uses the correctly calculated recoverableOpexTotal from the updated function.
-        yearCF.tenantReimbursementsNNN = inputs.rentRoll.some(l => l.reimbursementType === 'nnn') 
-            ? opexResults.recoverableOpexTotal 
-            : 0;
+        // Granular Tenant Reimbursement Calculation
+        let totalTenantReimbursementsThisYear = 0;
+        for (const lease of inputs.rentRoll) {
+            // Check if lease is active in the current projection year 'i'
+            // This check is simplified; a more robust check would compare lease start/end dates with current projection year dates
+            // For now, we assume if it's in rentRoll, it's potentially active or relevant for pro-rata calculations.
+            // A truly accurate check would involve looking at allLeaseProjections[leaseIndex][i].scheduledRent > 0 or similar
+            // but that might be overly complex if a lease has $0 rent but still pays CAM.
+            // The prompt implies looping through inputs.rentRoll directly for reimbursement calculation.
+
+            const leaseProRataShare = (lease.squareFeet > 0 && inputs.rentableSF > 0) ? (lease.squareFeet / inputs.rentableSF) : 0;
+            let leaseReimbursementAmount = 0;
+
+            if (lease.reimbursementType === 'nnn') {
+                let reimbursableForLease = opexResults.recoverableOpexTotal * leaseProRataShare;
+                if (lease.reimbursementDetails?.adminFeeOnOpExPercent && lease.reimbursementDetails.adminFeeOnOpExPercent > 0) {
+                    const adminFee = reimbursableForLease * (lease.reimbursementDetails.adminFeeOnOpExPercent / 100);
+                    leaseReimbursementAmount = reimbursableForLease + adminFee;
+                } else {
+                    leaseReimbursementAmount = reimbursableForLease;
+                }
+            } else if (lease.reimbursementType === 'modifiedGross') {
+                if (lease.reimbursementDetails?.expenseStopAmountPerSF && lease.reimbursementDetails.expenseStopAmountPerSF > 0) {
+                    const expenseStopTotalForLease = lease.reimbursementDetails.expenseStopAmountPerSF * lease.squareFeet;
+                    const recoverableOpexForLeaseShare = opexResults.recoverableOpexTotal * leaseProRataShare;
+                    let reimbursableForLease = Math.max(0, recoverableOpexForLeaseShare - expenseStopTotalForLease);
+                    
+                    if (lease.reimbursementDetails?.adminFeeOnOpExPercent && lease.reimbursementDetails.adminFeeOnOpExPercent > 0) {
+                        const adminFee = reimbursableForLease * (lease.reimbursementDetails.adminFeeOnOpExPercent / 100);
+                        leaseReimbursementAmount = reimbursableForLease + adminFee;
+                    } else {
+                        leaseReimbursementAmount = reimbursableForLease;
+                    }
+                } else {
+                    // Modified Gross without a specific stop amount defined, treat as Gross for reimbursement calculation.
+                    leaseReimbursementAmount = 0;
+                }
+            } else { // 'gross' or any other type
+                leaseReimbursementAmount = 0;
+            }
+            totalTenantReimbursementsThisYear += leaseReimbursementAmount;
+        }
+        yearCF.tenantReimbursementsNNN = totalTenantReimbursementsThisYear;
 
         // Recalculate Potential Gross Revenue (PGI) including rental income, reimbursements, and other income.
         yearCF.potentialGrossRevenue = yearCF.totalScheduledRentalRevenue! + 
-                                       yearCF.tenantReimbursementsNNN! + 
+                                       yearCF.tenantReimbursementsNNN! +  // Use the new detailed sum
                                        currentYearOtherIncome + // Added other income
                                        yearCF.potentialMarketRentFromVacancy!;
         
@@ -384,9 +465,29 @@ export function buildFullDCFCashFlows(inputs: AppraisalInputs): DCFResults | nul
 
         yearCF.netOperatingIncome = yearCF.effectiveGrossIncome - yearCF.operatingExpenses;
 
-        yearCF.capitalExpenditures = inputs.capitalExpenditures
-            .filter(ce => ce.year === currentYear)
-            .reduce((sum, ce) => sum + ce.amount, 0);
+        // Capital Expenditures Calculation (New Logic)
+        yearCF.capitalExpenditures = 0;
+        const currentYearCapexItems = inputs.capitalExpenditures.filter(ce => ce.year === currentYear);
+        currentYearCapexItems.forEach(ce => {
+            let actualAmount = 0;
+            const amountVal = ce.amount; 
+            switch (ce.amountType) {
+                case 'percentPGI':
+                    actualAmount = (yearCF.potentialGrossRevenue || 0) * amountVal;
+                    break;
+                case 'percentEGI':
+                    actualAmount = (yearCF.effectiveGrossIncome || 0) * amountVal;
+                    break;
+                case 'perSF':
+                    actualAmount = inputs.rentableSF * amountVal;
+                    break;
+                case 'fixed':
+                default: // Also treats !ce.amountType or empty string as fixed
+                    actualAmount = amountVal;
+                    break;
+            }
+            yearCF.capitalExpenditures! += actualAmount;
+        });
 
         yearCF.netCashFlow = yearCF.netOperatingIncome - yearCF.tenantImprovementsAndLcs! - yearCF.capitalExpenditures;
         yearCF.netCashFlowWithTerminal = yearCF.netCashFlow; // Will be adjusted for last year

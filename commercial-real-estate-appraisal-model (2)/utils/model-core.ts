@@ -196,16 +196,98 @@ export const generateCashFlows = (inputs: AppraisalInputs): AnnualCashFlow[] => 
 
 
 export const calcSalesComparison = (
-  salesComparables: ComparableSale[],
-  valueSelection: SalesCompValueSelectionType,
-  customValue: number
+  inputs: Pick<AppraisalInputs, 'salesComparables' | 'salesCompValueSelection' | 'salesCompCustomValue'>
+  // Removed direct marketConditionsAdjustmentType/Value from signature as per clarification
+  // Those global inputs guide the user in setting the per-comp marketTime AdjustmentItem.
 ): SalesComparisonResults => {
+  const { salesComparables, salesCompValueSelection, salesCompCustomValue } = inputs;
+
   const adjustedComps: AdjustedComparableSale[] = salesComparables.map(comp => {
-    const pricePerSF = comp.gba > 0 ? comp.salePrice / comp.gba : 0;
-    const totalAdjustmentPercent = Object.values(comp.adjustments).reduce((sum, adj) => sum + adj, 0);
-    const adjustedSalePrice = comp.salePrice * (1 + totalAdjustmentPercent / 100);
+    let currentAdjustmentAmount = 0;
+    const adjustments = comp.adjustments;
+
+    // Standard Adjustments (including marketTime as an AdjustmentItem)
+    const standardAdjustmentKeys: Array<keyof Omit<typeof adjustments, 'otherAdjustments'>> = [
+      'propertyRights', 'financing', 'conditionsOfSale', 'marketTime', 
+      'location', 'physicalSize', 'ageCondition', 'site'
+    ];
+
+    for (const adjKey of standardAdjustmentKeys) {
+      const adjItem = adjustments[adjKey];
+      if (adjItem && typeof adjItem.value === 'number') {
+        let singleAdjAmount = 0;
+        const adjValue = adjItem.value;
+        const adjType = adjItem.type || 'percentage'; // Default to percentage
+
+        if (adjType === 'percentage') {
+          singleAdjAmount = comp.salePrice * (adjValue / 100);
+        } else if (adjType === 'fixed') {
+          singleAdjAmount = adjValue;
+        } else if (adjType === 'perSF') {
+          singleAdjAmount = adjValue * (comp.gba || 0); // Use comp.gba, default to 0 if not present
+        }
+        currentAdjustmentAmount += singleAdjAmount;
+      }
+    }
+
+    // Other Adjustments
+    if (adjustments.otherAdjustments) {
+      for (const key in adjustments.otherAdjustments) {
+        const otherAdjItem = adjustments.otherAdjustments[key];
+        if (otherAdjItem && typeof otherAdjItem.value === 'number') {
+          let singleOtherAdjAmount = 0;
+          const adjValue = otherAdjItem.value;
+          const adjType = otherAdjItem.type || 'percentage';
+
+          if (adjType === 'percentage') {
+            singleOtherAdjAmount = comp.salePrice * (adjValue / 100);
+          } else if (adjType === 'fixed') {
+            singleOtherAdjAmount = adjValue;
+          } else if (adjType === 'perSF') {
+            singleOtherAdjAmount = adjValue * (comp.gba || 0);
+          }
+          currentAdjustmentAmount += singleOtherAdjAmount;
+        }
+      }
+    }
+
+    // Leasehold Adjustments
+    if (comp.leaseholdAdjustments && typeof comp.leaseholdAdjustments.value === 'number') {
+      const leaseholdAdjItem = comp.leaseholdAdjustments;
+      let singleLeaseholdAdjAmount = 0;
+      const adjValue = leaseholdAdjItem.value;
+      const adjType = leaseholdAdjItem.type || 'percentage';
+
+      if (adjType === 'percentage') {
+        singleLeaseholdAdjAmount = comp.salePrice * (adjValue / 100);
+      } else if (adjType === 'fixed') {
+        singleLeaseholdAdjAmount = adjValue;
+      } else if (adjType === 'perSF') {
+        singleLeaseholdAdjAmount = adjValue * (comp.gba || 0);
+      }
+      currentAdjustmentAmount += singleLeaseholdAdjAmount;
+    }
+
+    const totalAdjustmentAmount = currentAdjustmentAmount;
+    const adjustedSalePrice = comp.salePrice + totalAdjustmentAmount;
+    const pricePerSF = comp.gba > 0 ? comp.salePrice / comp.gba : 0; // Unadjusted $/SF
     const adjustedPricePerSF = comp.gba > 0 ? adjustedSalePrice / comp.gba : 0;
-    return { ...comp, pricePerSF, totalAdjustmentPercent, adjustedSalePrice, adjustedPricePerSF };
+    const totalAdjustmentPercent = comp.salePrice !== 0 ? (totalAdjustmentAmount / comp.salePrice) * 100 : 0;
+    
+    const pricePerUnit = (comp.numberOfUnits && comp.numberOfUnits > 0) ? adjustedSalePrice / comp.numberOfUnits : undefined;
+    const pricePerRoom = (comp.numberOfRooms && comp.numberOfRooms > 0) ? adjustedSalePrice / comp.numberOfRooms : undefined;
+
+    return { 
+      ...comp, 
+      pricePerSF, 
+      totalAdjustmentAmount,
+      totalAdjustmentPercent, 
+      adjustedSalePrice, 
+      adjustedPricePerSF,
+      pricePerUnit,
+      pricePerRoom
+      // Pass through comp.netOperatingIncome, comp.grossRentMultiplier, comp.capRate via ...comp
+    };
   });
 
   const adjustedPrices = adjustedComps.map(ac => ac.adjustedSalePrice).filter(p => p > 0);
@@ -221,7 +303,7 @@ export const calcSalesComparison = (
   }
   
   let salesComparisonValue = 0;
-  switch (valueSelection) {
+  switch (salesCompValueSelection) { // Use destructured variable
     case 'average':
       salesComparisonValue = averageAdjustedPrice;
       break;
@@ -229,7 +311,7 @@ export const calcSalesComparison = (
       salesComparisonValue = medianAdjustedPrice;
       break;
     case 'custom':
-      salesComparisonValue = customValue > 0 ? customValue : 0; // Ensure custom value is positive or zero
+      salesComparisonValue = salesCompCustomValue > 0 ? salesCompCustomValue : 0; // Use destructured variable
       break;
     default:
       salesComparisonValue = averageAdjustedPrice; // Default to average
@@ -244,23 +326,76 @@ export const calcSalesComparison = (
 };
 
 export const calcCostApproach = (
-  inputs: Pick<AppraisalInputs, 'effectiveAge' | 'economicLife' | 'improvementCostNew' | 'landValue'>
+  inputs: Pick<
+    AppraisalInputs, 
+    | 'effectiveAge' 
+    | 'economicLife' 
+    | 'improvementCostNewBreakdown' 
+    | 'landValue' 
+    | 'physicalDeteriorationCurableAmount'
+    | 'physicalDeteriorationIncurableAmount'
+    | 'functionalObsolescenceCurableAmount'
+    | 'functionalObsolescenceIncurableAmount'
+    | 'externalObsolescenceAmount'
+    | 'externalObsolescencePercent'
+  >
 ): CostApproachResults => {
-  const { effectiveAge, economicLife, improvementCostNew, landValue } = inputs;
-  let ageLifeDepreciationPercent = 0;
-  if (economicLife > 0 && effectiveAge > 0 && effectiveAge <= economicLife) {
-    ageLifeDepreciationPercent = (effectiveAge / economicLife) * 100;
-  } else if (effectiveAge > economicLife && economicLife > 0) {
-      ageLifeDepreciationPercent = 100; 
+  const { 
+    effectiveAge, 
+    economicLife, 
+    improvementCostNewBreakdown, 
+    landValue,
+    physicalDeteriorationCurableAmount,
+    physicalDeteriorationIncurableAmount,
+    functionalObsolescenceCurableAmount,
+    functionalObsolescenceIncurableAmount,
+    externalObsolescenceAmount,
+    externalObsolescencePercent
+  } = inputs;
+
+  const costOfNewImprovements = improvementCostNewBreakdown.total ?? 
+                                (
+                                  (improvementCostNewBreakdown.hardCosts ?? 0) +
+                                  (improvementCostNewBreakdown.softCosts ?? 0) +
+                                  (improvementCostNewBreakdown.developerProfit ?? 0)
+                                );
+
+  let calculatedTotalDepreciation = 0;
+  calculatedTotalDepreciation += physicalDeteriorationCurableAmount ?? 0;
+  calculatedTotalDepreciation += physicalDeteriorationIncurableAmount ?? 0;
+  calculatedTotalDepreciation += functionalObsolescenceCurableAmount ?? 0;
+  calculatedTotalDepreciation += functionalObsolescenceIncurableAmount ?? 0;
+  calculatedTotalDepreciation += externalObsolescenceAmount ?? 0;
+
+  if (externalObsolescencePercent && externalObsolescencePercent > 0 && costOfNewImprovements > 0) {
+    const externalObsolescenceFromPercent = costOfNewImprovements * (externalObsolescencePercent / 100);
+    calculatedTotalDepreciation += externalObsolescenceFromPercent;
+  }
+
+  const useDetailedDepreciation = calculatedTotalDepreciation > 0;
+  let totalDepreciationToApply = 0;
+  let ageLifeDepreciationPercentResult = 0;
+
+  if (useDetailedDepreciation) {
+    totalDepreciationToApply = calculatedTotalDepreciation;
+    if (costOfNewImprovements > 0) {
+      ageLifeDepreciationPercentResult = (totalDepreciationToApply / costOfNewImprovements) * 100;
+    }
+  } else {
+    if (economicLife > 0 && effectiveAge > 0 && effectiveAge <= economicLife) {
+      ageLifeDepreciationPercentResult = (effectiveAge / economicLife) * 100;
+    } else if (effectiveAge > economicLife && economicLife > 0) {
+      ageLifeDepreciationPercentResult = 100;
+    }
+    totalDepreciationToApply = costOfNewImprovements * (ageLifeDepreciationPercentResult / 100);
   }
   
-  const totalDepreciationAmount = improvementCostNew * (ageLifeDepreciationPercent / 100);
-  const depreciatedImprovementCost = improvementCostNew - totalDepreciationAmount;
+  const depreciatedImprovementCost = costOfNewImprovements - totalDepreciationToApply;
   const costApproachValue = depreciatedImprovementCost + landValue;
 
   return { 
-    ageLifeDepreciationPercent, 
-    totalDepreciationAmount, 
+    ageLifeDepreciationPercent: ageLifeDepreciationPercentResult, 
+    totalDepreciationAmount: totalDepreciationToApply, 
     depreciatedImprovementCost, 
     costApproachValue: Math.max(0, costApproachValue) 
   };

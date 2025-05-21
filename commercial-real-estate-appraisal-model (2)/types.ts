@@ -79,11 +79,45 @@ export interface RentRollEntry {
   renewalOptions?: LeaseOption[];
 }
 
+export type CapexAmountType = 'fixed' | 'percentPGI' | 'percentEGI' | 'perSF' | '';
+export type CapexCategory = 'structural' | 'recurringReserve' | '';
+
 export interface CapitalExpenditureEntry {
   id: string; // UUID
   year: number; // Projection year (1, 2, 3...)
   description: string;
-  amount: number;
+  amountType: CapexAmountType;
+  // If 'fixed', amount is total $
+  // If 'percentPGI' or 'percentEGI', amount is percentage (e.g., 0.02 for 2%)
+  // If 'perSF', amount is $/SF (applied to inputs.rentableSF for now)
+  amount: number; 
+  category?: CapexCategory;
+}
+
+// New interface for Market Leasing Assumptions
+export interface MarketLeasingAssumptions {
+  marketRentNewLeasePerSF: number; // annual $/SF
+  timeToLeaseVacantSFMonths: number;
+  newLeaseTiPerSF: number; // TI $/SF for new leases
+  newLeaseLcPercent: number; // Leasing Commission % of first year's rent
+}
+
+// New interface for Discount Rate Derivation details
+export interface DiscountRateDerivation {
+  riskFreeRate?: number;
+  equityRiskPremium?: number;
+  sizePremium?: number;
+  specificRiskPremium?: number;
+  narrative?: string;
+}
+
+// New interface for Exit Cap Rate Derivation details
+export interface ExitCapRateDerivation {
+  bandOfInvestmentNarrative?: string;
+  marketSurveyNarrative?: string;
+  terminalYearDebtEquityAssumptions?: string;
+  spreadOverDiscountRate?: number;
+  narrative?: string;
 }
 
 export interface AnnualCashFlow { // Base for simpler projection and DCF
@@ -151,15 +185,22 @@ export interface OtherIncomeItem {
   growthRate?: number; // percentage
 }
 
+// New interface for Adjustment Items
+export interface AdjustmentItem {
+  value: number;
+  type: 'percentage' | 'fixed' | 'perSF' | ''; // Empty string or undefined could default to 'percentage'
+}
+
 export interface SalesCompAdjustments {
-  propertyRights: number; // Percentage
-  financing: number; // Percentage
-  conditionsOfSale: number; // Percentage
-  marketTime: number; // Percentage
-  location: number; // Percentage
-  physicalSize: number; // Percentage (based on GBA differences)
-  ageCondition: number; // Percentage
-  site: number; // Percentage
+  propertyRights: AdjustmentItem;
+  financing: AdjustmentItem;
+  conditionsOfSale: AdjustmentItem;
+  marketTime: AdjustmentItem; // This will now use the new fields in AppraisalInputs for calculation
+  location: AdjustmentItem;
+  physicalSize: AdjustmentItem; // e.g., based on GBA or other unit differences
+  ageCondition: AdjustmentItem;
+  site: AdjustmentItem;
+  otherAdjustments?: { [key: string]: AdjustmentItem }; // For any ad-hoc adjustments
 }
 
 export interface ComparableSale {
@@ -171,12 +212,26 @@ export interface ComparableSale {
   propertyRightsConveyed: PropertyRights; 
   financingTerms: FinancingTerms; 
   conditionOfSale: ConditionOfSale; 
+  conditionsOfSaleDetails?: string;
   locationQuality: LocationQuality; 
   siteUtility: SiteUtility; 
   adjustments: SalesCompAdjustments;
+  leaseholdAdjustments?: AdjustmentItem;
+  specialAssessments?: string;
+  pendingLitigation?: string;
+  dataSource?: string;
+  verificationSource?: string;
+  verificationDate?: string; // YYYY-MM-DD
+  qualitativeRatings?: { [key: string]: 'Superior' | 'Similar' | 'Inferior' | '' };
+  numberOfUnits?: number;
+  numberOfRooms?: number;
+  netOperatingIncome?: number;
+  grossRentMultiplier?: number;
+  capRate?: number; // as percentage e.g. 7.5
 }
 
 export type SalesCompValueSelectionType = 'average' | 'median' | 'custom';
+export type MarketConditionsAdjustmentType = 'annualPercent' | 'monthlyRate' | 'directAmount' | '';
 
 // New interface for Subject Sale History
 export interface SubjectSaleHistoryEntry {
@@ -333,9 +388,10 @@ export interface AppraisalInputs {
 
   // Sales Comparison Inputs
   salesComparables: ComparableSale[];
-  annualMarketConditionsAdjustmentPercent: number;
-  salesCompValueSelection: SalesCompValueSelectionType; // New
-  salesCompCustomValue: number; // New
+  marketConditionsAdjustmentType: MarketConditionsAdjustmentType;
+  marketConditionsAdjustmentValue: number; // Value depends on type
+  salesCompValueSelection: SalesCompValueSelectionType; 
+  salesCompCustomValue: number; 
 
   // Cost Approach Inputs
   landValue: number;
@@ -392,6 +448,32 @@ export interface AppraisalInputs {
   // Market Analysis Inputs
   marketDemographics: MarketDemographics;
   submarketAnalysis: SubmarketAnalysis;
+  marketLeasingAssumptions?: MarketLeasingAssumptions;
+
+  // Derivation Details (Informational)
+  discountRateDerivation?: DiscountRateDerivation;
+  exitCapRateDerivation?: ExitCapRateDerivation;
+
+  // Cost Approach Inputs - Detailed
+  costDataSource: string;
+  improvementCostNewBreakdown: ImprovementCostNewBreakdown;
+  physicalDeteriorationCurableAmount?: number;
+  physicalDeteriorationIncurableAmount?: number;
+  functionalObsolescenceCurableAmount?: number;
+  functionalObsolescenceIncurableAmount?: number;
+  functionalObsolescenceNarrative?: string;
+  externalObsolescenceAmount?: number;
+  externalObsolescencePercent?: number; // applied to improvement cost
+  externalObsolescenceNarrative?: string;
+  landSaleComparables?: ComparableSale[];
+}
+
+// New interface for Improvement Cost New Breakdown
+export interface ImprovementCostNewBreakdown {
+  hardCosts?: number;
+  softCosts?: number;
+  developerProfit?: number; // Or Entrepreneurial Incentive
+  total?: number; // This would be the sum or the figure used if breakdown isn't provided
 }
 
 export interface IncomeApproachResults {
@@ -407,10 +489,13 @@ export interface IncomeApproachResults {
 }
 
 export interface AdjustedComparableSale extends ComparableSale {
-  pricePerSF: number;
+  pricePerSF: number; // This is typically unadjusted price per SF.
+  totalAdjustmentAmount: number;
   totalAdjustmentPercent: number;
   adjustedSalePrice: number;
-  adjustedPricePerSF: number; // New
+  adjustedPricePerSF: number; 
+  pricePerUnit?: number;
+  pricePerRoom?: number;
 }
 
 export interface SalesComparisonResults {
