@@ -1,5 +1,7 @@
 // Utility functions for extracting information from HTML content.
 
+import * as cheerio from 'cheerio';
+
 /**
  * Extracts plain text from an HTML string by removing HTML tags.
  * This is a basic implementation using regular expressions.
@@ -34,18 +36,28 @@ export function extract_text_from_html(html_content: string): string {
  * 
  * @param html_content - The HTML string to process.
  * @returns An array of tables, where each table is an array of rows, 
- *          and each row is an array of cell strings. Currently returns an empty array.
+ *          and each row is an array of cell strings.
  */
 export function extract_tables_from_html(html_content: string): Array<Array<Array<string>>> {
-  console.log("Placeholder: extract_tables_from_html would parse HTML to find <table> elements and extract their data.");
-  // Placeholder: A real implementation would use a proper HTML parser.
-  // For example, it might look for <table>, then <tr>, then <td>/<th>.
-  // const tables: Array<Array<Array<string>>> = [];
-  // const tableElements = html_content.match(/<table[^>]*>.*?<\/table>/gis); // Very naive
-  // if (tableElements) {
-  //   // ... further parsing logic ...
-  // }
-  return []; 
+  if (!html_content) {
+    return [];
+  }
+  const $ = cheerio.load(html_content);
+  const tables: Array<Array<Array<string>>> = [];
+
+  $('table').each((tableIndex, tableElement) => {
+    const table: Array<Array<string>> = [];
+    $(tableElement).find('tr').each((rowIndex, rowElement) => {
+      const row: Array<string> = [];
+      $(rowElement).find('th, td').each((cellIndex, cellElement) => {
+        row.push($(cellElement).text().trim());
+      });
+      table.push(row);
+    });
+    tables.push(table);
+  });
+
+  return tables;
 }
 
 /**
@@ -58,17 +70,30 @@ export function extract_tables_from_html(html_content: string): Array<Array<Arra
  * 
  * @param html_content - The HTML string to process.
  * @param base_url - The base URL to resolve relative links.
- * @returns An array of link objects, each containing `text` and `href` (fully qualified URL). 
- *          Currently returns an empty array.
+ * @returns An array of link objects, each containing `text` and `href` (fully qualified URL).
  */
 export function extract_links_from_html(html_content: string, base_url: string): Array<{text: string, href: string}> {
-  console.log(`Placeholder: extract_links_from_html would parse HTML to find <a> tags, extract href and text, and resolve relative links using base_url: ${base_url}.`);
-  // Placeholder: A real implementation would use a proper HTML parser.
-  // For example, it might look for <a href="...">text</a>
-  // const links: Array<{text: string, href: string}> = [];
-  // const anchorElements = html_content.match(/<a\s+(?:[^>]*?\s+)?href="([^"]*)"[^>]*>(.*?)<\/a>/gis); // Very naive
-  // if (anchorElements) {
-  //   // ... further parsing logic to extract href, text, and resolve with base_url ...
-  // }
-  return [];
+  if (!html_content) {
+    return [];
+  }
+  const $ = cheerio.load(html_content);
+  const links: Array<{text: string, href: string}> = [];
+
+  $('a[href]').each((linkIndex, linkElement) => {
+    const linkText = $(linkElement).text().trim();
+    const rawHref = $(linkElement).attr('href');
+
+    if (rawHref) {
+      try {
+        const absoluteHref = new URL(rawHref, base_url).href;
+        links.push({ text: linkText, href: absoluteHref });
+      } catch (error) {
+        console.warn(`Skipping malformed link: '${rawHref}' (base: ${base_url}). Error: ${error instanceof Error ? error.message : String(error)}`);
+        // Optionally, could add the raw link if it's useful, or a link with an error indicator
+        // links.push({ text: linkText, href: rawHref, error: "Malformed URL" });
+      }
+    }
+  });
+
+  return links;
 }

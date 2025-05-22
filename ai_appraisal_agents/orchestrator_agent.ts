@@ -104,29 +104,19 @@ export class OrchestratorAgent extends BaseAgent {
           console.log(msgFemaResult);
           summaryLog.push(msgFemaResult);
 
-          // Simulate receiving actual data after "pending_external_action"
-          const simulatedFloodData = {
-            flood_zone: "X (Simulated)",
-            map_panel: "25000C0000X (Simulated)",
-            effective_date: "2024-01-01 (Simulated)"
-          };
-          const msgSimulatedData = `Received simulated flood data: ${JSON.stringify(simulatedFloodData)}`;
-          console.log(msgSimulatedData);
-          summaryLog.push(msgSimulatedData);
-
-          const memoryKey = `flood_data_${context.property_address.replace(/\s+/g, '_')}`;
-          const memoryContext = { key: memoryKey, value: simulatedFloodData };
-          const msgMemoryCall = `Calling MemoryContextAgent (${this.memoryContextAgent.get_id()}) to set data with key: ${memoryKey}.`;
-          console.log(msgMemoryCall);
-          summaryLog.push(msgMemoryCall);
+          // Store the direct result from FEMAFloodAgent (which now contains actual data or status)
+          // The MemoryContextAgent is primarily for inter-task memory or complex state.
+          // For direct aggregation, we'll use the femaResult later in the aggregation step.
+          // If MemoryContextAgent were to be used here, it would store femaResult.data or femaResult itself.
+          // For now, we'll remove the explicit memory set here and use the result directly.
           
-          const memoryResult = await this.memoryContextAgent.execute_task("set_data", memoryContext);
-          const msgMemoryResult = `MemoryContextAgent set_data result: ${JSON.stringify(memoryResult)}`;
-          console.log(msgMemoryResult);
-          summaryLog.push(msgMemoryResult);
+          // The following MemoryContextAgent call for 'set_data' with simulatedFloodData is removed.
+          // We'll handle femaResult in the aggregation phase.
+
+          summaryLog.push(`FEMAFloodAgent processing complete. Actual data/status captured in femaResult.`);
 
         } else {
-          const msgNoFemaOrMemory = "FEMAFloodAgent or MemoryContextAgent not available for full flood data workflow.";
+          const msgNoFemaOrMemory = "FEMAFloodAgent not available for flood data workflow.";
           console.warn(msgNoFemaOrMemory);
           summaryLog.push(msgNoFemaOrMemory);
         }
@@ -175,37 +165,95 @@ export class OrchestratorAgent extends BaseAgent {
         summaryLog.push(`ZoningDataAgent result: ${JSON.stringify(zoningResult?.status)}`);
       }
       
-      // Retrieve Flood Data from MemoryContextAgent
-      if (this.memoryContextAgent) {
-        const memoryKey = `flood_data_${context.property_address.replace(/\s+/g, '_')}`;
-        const floodDataResult = await this.memoryContextAgent.execute_task("get_data", { key: memoryKey });
-        aggregatedData.flood_data = floodDataResult?.data || "No flood data found in memory";
-        summaryLog.push(`Retrieved flood_data from MemoryContextAgent (key ${memoryKey}): ${JSON.stringify(floodDataResult?.status)}`);
-      } else {
-        aggregatedData.flood_data = "MemoryContextAgent not available to retrieve flood data.";
-        summaryLog.push("MemoryContextAgent not available to retrieve flood data.");
+      // Retrieve Flood Data (now directly from femaResult if FEMAFloodAgent was called in this task)
+      // This assumes femaResult is available in this scope. If FEMAFloodAgent is called
+      // as part of the main sequence like other agents, its result will be added directly.
+      // For this refactor, we'll add a specific step for FEMA if it was called earlier.
+      // However, the more common pattern would be to call it along with other agents below.
+      // Let's adjust to call FEMA agent along with others for cleaner aggregation.
+      
+      // --- Data Aggregation ---
+      let aggregatedData: any = {
+        property_address: context.property_address,
+        county: context.county,
+        town: context.town,
+        identification_data: { status: "not_executed", message: "PropertyIdentificationAgent not available or not run." },
+        assessment_data: { status: "not_executed", message: "AssessmentDataAgent not available or not run." },
+        zoning_data: { status: "not_executed", message: "ZoningDataAgent not available or not run." },
+        flood_data: { status: "not_executed", message: "FEMAFloodAgent not available or not run." }
+      };
+
+      // Helper function to process agent results for aggregation
+      const processAgentResult = (result: any, agentName: string) => {
+        summaryLog.push(`${agentName} result status: ${JSON.stringify(result?.status)}`);
+        if (result && result.status && (result.status.startsWith("success_real_data") || result.status.startsWith("success_simulated"))) { // success_simulated should be gone but good fallback
+            return result.data || { status: result.status, message: `No data payload from ${agentName} despite success status.` };
+        } else if (result) {
+            return { status: result.status || "unknown_error", message: result.message || `${agentName} failed or returned incomplete data.`, full_result: result };
+        }
+        return { status: "error", message: `${agentName} execution failed or no result.` };
+      };
+      
+      // Call PropertyIdentificationAgent
+      if (this.propertyIdentificationAgent) {
+        const idContext = { property_address: context.property_address, county: context.county, town: context.town };
+        const idResult = await this.propertyIdentificationAgent.execute_task("get_property_identification_data", idContext);
+        aggregatedData.identification_data = processAgentResult(idResult, "PropertyIdentificationAgent");
       }
 
+      // Call AssessmentDataAgent
+      if (this.assessmentDataAgent) {
+        const assessContext = { property_address: context.property_address, town: context.town };
+        const assessResult = await this.assessmentDataAgent.execute_task("get_assessment_data", assessContext);
+        aggregatedData.assessment_data = processAgentResult(assessResult, "AssessmentDataAgent");
+      }
+
+      // Call ZoningDataAgent
+      if (this.zoningDataAgent) {
+        const zoningContext = { property_address: context.property_address, town: context.town };
+        const zoningResult = await this.zoningDataAgent.execute_task("get_zoning_data_initial", zoningContext);
+        aggregatedData.zoning_data = processAgentResult(zoningResult, "ZoningDataAgent");
+      }
+      
+      // Call FEMAFloodAgent as part of the main data gathering sequence
+      if (this.femaFloodAgent) {
+        const femaTaskDescription = "get_flood_zone_data";
+        const femaContext = { property_address: context.property_address };
+        const femaResult = await this.femaFloodAgent.execute_task(femaTaskDescription, femaContext);
+        // Specific handling for FEMAFloodAgent as per instructions
+        if (femaResult && femaResult.status && femaResult.status.startsWith("success_real_data")) {
+            aggregatedData.flood_data = femaResult.data || { status: femaResult.status, message: "No data payload from FEMAFloodAgent despite success status." };
+        } else if (femaResult) {
+            aggregatedData.flood_data = { status: femaResult.status || "unknown_error", message: femaResult.message || "FEMAFloodAgent failed or returned incomplete data.", full_result: femaResult };
+        } else {
+            aggregatedData.flood_data = { status: "error", message: "FEMAFloodAgent execution failed or no result."};
+        }
+        summaryLog.push(`FEMAFloodAgent result status: ${JSON.stringify(femaResult?.status)}`);
+      }
+      // Removed the MemoryContextAgent.get_data call for flood data as it's now directly aggregated.
+
       this.status = AgentStatus.IDLE;
-      const finalMessage = `Simulated appraisal research process complete.`;
+      const finalMessage = `Real data appraisal research process attempted. Review aggregated_data for details.`;
       console.log(`OrchestratorAgent (${this.id}): ${finalMessage} Summary: ${summaryLog.join(" | ")}`);
       
       return {
-        status: "success_simulated",
+        status: "success_real_data_attempted", // Updated status
         message: finalMessage,
         aggregated_data: aggregatedData
       };
 
-    } catch (error) {
+    } catch (error: any) { // Ensure error is typed as any or unknown for broader compatibility
       this.status = AgentStatus.ERROR;
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error(`OrchestratorAgent (${this.id}) encountered an error:`, errorMessage);
+      console.error(`OrchestratorAgent (${this.id}) encountered an error:`, errorMessage, error.stack); // Added stack for more detail
       summaryLog.push(`Error during orchestration: ${errorMessage}`);
-      // Still throw, but ensure the return type matches the expected Promise<any> which could be an object
-      throw { 
-        status: "error",
-        message: `Orchestrator failed to execute task: ${task_description}. Error: ${errorMessage}`,
-        summary: summaryLog.join(" | ")
+      
+      // Return a structured error object instead of throwing, to fulfill Promise<any>
+      return { 
+        status: "error_orchestrator_internal", // More specific error status
+        message: `Orchestrator failed to execute task '${task_description}' due to an internal error. Error: ${errorMessage}`,
+        summary: summaryLog.join(" | "),
+        error_details: error 
       };
     }
   }

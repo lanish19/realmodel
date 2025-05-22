@@ -20,7 +20,8 @@ async function main() {
 
   // 1. Create instances of individual specialist agents
   const researchAgent = new ResearchAgent("researcher-001");
-  const femaFloodAgent = new FEMAFloodAgent("fema-flood-checker-001");
+  // FEMAFloodAgent now requires ResearchAgent
+  const femaFloodAgent = new FEMAFloodAgent("fema-flood-checker-001", researchAgent); 
   const memoryContextAgent = new MemoryContextAgent("memory-context-001");
 
   // Agents that depend on ResearchAgent

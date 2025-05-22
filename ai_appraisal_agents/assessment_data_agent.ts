@@ -2,6 +2,7 @@
 
 import { BaseAgent, AgentStatus } from "./base_agent";
 import { ResearchAgent } from "./research_agent";
+import { extract_text_from_html } from "./extraction_utils"; // Import extraction utility
 
 /**
  * AssessmentDataAgent is specialized in retrieving property assessment data
@@ -34,28 +35,36 @@ export class AssessmentDataAgent extends BaseAgent {
       if (task_description !== "get_assessment_data") {
         this.status = AgentStatus.IDLE;
         console.warn(`AssessmentDataAgent (${this.id}): Unknown task: ${task_description}`);
-        return { status: "failed", message: `Unknown task for AssessmentDataAgent: ${task_description}` };
+        return { status: "error_unknown_task", message: `Unknown task for AssessmentDataAgent: ${task_description}` };
       }
 
       if (!context || !context.property_address || !context.town) {
         this.status = AgentStatus.ERROR;
         const missingParams = ['property_address', 'town'].filter(p => !context?.[p]).join(', ');
         console.error(`AssessmentDataAgent (${this.id}): Missing required context parameters: ${missingParams}`);
-        throw new Error(`Missing required context parameters: ${missingParams} for task: ${task_description}`);
+        // Return a structured error instead of throwing
+        return { 
+            status: "error_missing_input", 
+            message: `Missing required context parameters: ${missingParams} for task: ${task_description}`,
+            context_received: context
+        };
       }
 
       const { property_address, town } = context;
 
       // Step 1: Get list of potential portals to identify assessor sites
-      const portalsResult = await this.researchAgent.execute_task("find_public_record_portals_for_eastern_massachusetts", {});
+      const portalResearchTask = "find_public_record_portals_for_eastern_massachusetts";
+      const portalsResult = await this.researchAgent.execute_task(portalResearchTask, {});
       
-      let assessorSiteInfo = "No portals found or ResearchAgent failed. Cannot determine specific assessor site.";
-      let targetPortal = `Generic Assessor Portal for ${town}`;
+      let assessorSiteInfo = "Assessor portal identification did not run or failed.";
+      let targetPortal: string | null = null; 
 
-      if (portalsResult && portalsResult.status === "success" && portalsResult.data?.portals) {
+      if (portalsResult.status.startsWith("error")) {
+        assessorSiteInfo = `ResearchAgent failed during portal identification (Task: ${portalResearchTask}): ${portalsResult.message}`;
+        console.error(`AssessmentDataAgent (${this.id}): ${assessorSiteInfo}`);
+        // Proceeding without a specific portal, will likely result in "no_portal_identified" later
+      } else if (portalsResult.data?.portals) {
         const availablePortals: string[] = portalsResult.data.portals;
-        
-        // Try to find a town-specific assessor portal
         const townSpecificPortal = availablePortals.find(portal => 
           portal.toLowerCase().includes(town.toLowerCase()) && 
           (portal.toLowerCase().includes("assessor") || portal.toLowerCase().includes("assessment"))
@@ -65,57 +74,123 @@ export class AssessmentDataAgent extends BaseAgent {
           targetPortal = townSpecificPortal;
           assessorSiteInfo = `Identified potential assessor portal for ${town}: ${targetPortal}`;
         } else {
-           // Fallback for common known portals if direct match failed
           const bostonAssessor = "https://www.cityofboston.gov/assessing/search/";
           const weymouthAssessor = "https://www.weymouth.ma.us/assessor/pages/online-assessing-database";
           if (town.toLowerCase() === "boston" && availablePortals.includes(bostonAssessor)) {
             targetPortal = bostonAssessor;
-            assessorSiteInfo = `Identified specific assessor portal for ${town}: ${targetPortal}`;
           } else if (town.toLowerCase() === "weymouth" && availablePortals.includes(weymouthAssessor)) {
             targetPortal = weymouthAssessor;
-            assessorSiteInfo = `Identified specific assessor portal for ${town}: ${targetPortal}`;
+          }
+          if (targetPortal) {
+            assessorSiteInfo = `Identified specific assessor portal for ${town} via fallback: ${targetPortal}`;
           } else {
-            assessorSiteInfo = `No specific assessor portal found for ${town} in the known list. Would perform a general search or use a known statewide/county portal if applicable. Target assumed: ${targetPortal}`;
+            assessorSiteInfo = `No specific assessor portal found for ${town} in the known list or fallbacks.`;
           }
         }
+      } else {
+        assessorSiteInfo = "ResearchAgent portal search returned no portals or unexpected data.";
+        console.warn(`AssessmentDataAgent (${this.id}): ${assessorSiteInfo}`);
       }
       console.log(`AssessmentDataAgent (${this.id}): ${assessorSiteInfo}`);
-      console.log(`AssessmentDataAgent (${this.id}): Would attempt to search for address '${property_address}' on '${targetPortal}'.`);
-
-      // Step 2: Simulate searching this portal and finding data
-      // In a real scenario, this would involve a call to researchAgent with "search_property_address_on_portal"
-      // using the 'targetPortal' URL, and then using extraction_utils to parse the HTML results for assessment data.
-
-      const simulatedData = {
-        property_address: property_address,
-        town: town,
-        total_assessed_value: `SIMULATED_${Math.floor(Math.random() * 3000000 + 500000)}`, // Random value between 500k and 3.5M
-        fiscal_year: `SIMULATED_${new Date().getFullYear() + 1}`, // Next fiscal year
-        tax_rate_commercial: `SIMULATED_${(Math.random() * 10 + 10).toFixed(2)}`, // Random rate between 10.00 and 20.00
-        annual_taxes: `SIMULATED_${Math.floor(Math.random() * 50000 + 5000)}` // Random taxes
-      };
       
-      // Calculate simulated annual taxes based on value and rate for more realism
-      const assessedValue = parseFloat(simulatedData.total_assessed_value.replace("SIMULATED_", ""));
-      const taxRate = parseFloat(simulatedData.tax_rate_commercial.replace("SIMULATED_", ""));
-      if (!isNaN(assessedValue) && !isNaN(taxRate)) {
-        simulatedData.annual_taxes = `SIMULATED_${((assessedValue / 1000) * taxRate).toFixed(0)}`;
+      if (!targetPortal) {
+          console.log(`AssessmentDataAgent (${this.id}): No specific assessor portal URL could be confidently identified for ${town}.`);
+          this.status = AgentStatus.IDLE;
+          return {
+              status: "error_no_assessor_portal_identified", 
+              message: `Could not identify a specific assessor portal for ${town}. Log: ${assessorSiteInfo}`,
+              data: { property_address, town, portal_identification_log: assessorSiteInfo }
+          };
+      }
+      
+      console.log(`AssessmentDataAgent (${this.id}): Attempting to search for address '${property_address}' on identified portal: '${targetPortal}'.`);
+
+      // Step 2: Fetch and Parse Content from the identified assessor portal
+      const researchTaskForPortal = `search_property_address_on_portal ${targetPortal} ${property_address}`;
+      const researchResult = await this.researchAgent.execute_task(
+        researchTaskForPortal,
+        { portal_url: targetPortal, address: property_address }
+      );
+
+      if (researchResult.status.startsWith("error")) {
+        console.warn(`AssessmentDataAgent (${this.id}): ResearchAgent failed for ${targetPortal}. Status: ${researchResult.status}`);
+        this.status = AgentStatus.IDLE;
+        return { 
+          status: "error_dependency_research_failed", 
+          message: `ResearchAgent failed to fetch or process data from ${targetPortal}.`,
+          research_agent_error: researchResult,
+          portal_url_searched: targetPortal
+        };
+      }
+      
+      if (!researchResult.data?.html_content) {
+        console.warn(`AssessmentDataAgent (${this.id}): ResearchAgent returned no HTML content from ${targetPortal}.`);
+        this.status = AgentStatus.IDLE;
+        return { 
+          status: "error_dependency_no_content", 
+          message: `ResearchAgent returned no HTML content from ${targetPortal}.`,
+          research_agent_response: researchResult,
+          portal_url_searched: targetPortal
+        };
+      }
+      
+      try {
+        const htmlContent = researchResult.data.html_content;
+        const textContent = extract_text_from_html(htmlContent).toLowerCase();
+        const keywordsToScan = ["assessed value", "total assessment", "tax rate", "fiscal year", "property tax", "valuation"];
+        const foundKeywords: string[] = [];
+
+        keywordsToScan.forEach(keyword => {
+          if (textContent.includes(keyword)) {
+            foundKeywords.push(keyword);
+          }
+        });
+
+        this.status = AgentStatus.IDLE;
+
+        if (foundKeywords.length > 0) {
+          console.log(`AssessmentDataAgent (${this.id}): Found keywords [${foundKeywords.join(', ')}] on ${targetPortal}`);
+          return {
+            status: "success_real_data_keywords_found",
+            data: {
+              property_address, town,
+              portal_url_searched: targetPortal,
+              keywords_found: foundKeywords,
+              notes: "Successfully fetched and scanned content from assessor portal."
+            },
+            message: "Attempted to fetch and scan content from identified assessor portal. Keywords found."
+          };
+        } else {
+          console.log(`AssessmentDataAgent (${this.id}): No specific assessment keywords found on ${targetPortal} after scan.`);
+          return {
+            status: "success_real_data_no_keywords_found",
+            data: {
+              property_address, town,
+              portal_url_searched: targetPortal,
+              notes: "Successfully fetched content from assessor portal, but no relevant assessment keywords found after scan."
+            },
+            message: "Could not extract specific assessment details (no relevant keywords found) from the assessor portal."
+          };
+        }
+      } catch (processingError: any) {
+        this.status = AgentStatus.ERROR;
+        console.error(`AssessmentDataAgent (${this.id}): Error processing HTML from ${targetPortal}:`, processingError.message, processingError.stack);
+        return {
+          status: "error_internal_processing",
+          message: `An unexpected error occurred while processing data from ${targetPortal}.`,
+          error_details: processingError.message,
+          portal_url_searched: targetPortal
+        };
       }
 
-      const message = `Simulated search on ${town}'s Assessor site (${targetPortal}).`;
-      console.log(`AssessmentDataAgent (${this.id}): ${message}`);
-      
-      this.status = AgentStatus.IDLE;
-      return Promise.resolve({
-        status: "success_simulated",
-        data: simulatedData,
-        message: message
-      });
-
-    } catch (error) {
+    } catch (error: any) { // Main try-catch for setup errors or truly unexpected issues
       this.status = AgentStatus.ERROR;
-      console.error(`AssessmentDataAgent (${this.id}) encountered an error:`, error);
-      throw new Error(`AssessmentDataAgent failed to execute task '${task_description}'. Error: ${error instanceof Error ? error.message : String(error)}`);
+      console.error(`AssessmentDataAgent (${this.id}) encountered an unhandled error:`, error.message, error.stack);
+      return { 
+        status: "error_agent_internal", 
+        message: `AssessmentDataAgent failed to execute task '${task_description}' due to an internal error.`,
+        error_details: error.message 
+      };
     }
   }
 }
